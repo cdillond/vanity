@@ -19,8 +19,10 @@ type cmpFunc func(common.Address, []byte) bool
 
 func insensitiveCmp(a common.Address, b []byte) bool {
 	hexAddr := hex.AppendEncode(nil, a[:])
-	// panic if hexAddr is shorter than b
-	_ = hexAddr[len(b)-1]
+	if len(b) > len(hexAddr) {
+		return false
+	}
+
 	for i := 0; i < len(b); i++ {
 		if b[i] != hexAddr[i] {
 			return false
@@ -31,8 +33,9 @@ func insensitiveCmp(a common.Address, b []byte) bool {
 
 func sensitiveCmp(a common.Address, b []byte) bool {
 	hexAddr := a.Hex()
-	// panic if hexAddr is shorter than b
-	_ = hexAddr[len(b)-1]
+	if len(b) > len(hexAddr) {
+		return false
+	}
 	for i := 0; i < len(b); i++ {
 		if b[i] != hexAddr[i] {
 			return false
