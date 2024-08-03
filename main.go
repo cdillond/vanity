@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/rand"
 	"encoding/hex"
@@ -8,36 +9,46 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"strings"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 )
 
-type cmpFunc func(common.Address, []byte) bool
+type cmpFunc func(common.Address, []byte, []byte, []byte) bool
 
-func insensitiveCmp(a common.Address, b []byte) bool {
-	hexAddr := hex.AppendEncode(nil, a[:])
-	if len(b) > len(hexAddr) {
+func insensitiveCmp(a common.Address, prefix, suffix, buf []byte) bool {
+	hexAddr := hex.AppendEncode(buf, a[:])
+	if len(prefix)+len(suffix) > len(hexAddr) {
 		return false
 	}
 
-	for i := 0; i < len(b); i++ {
-		if b[i] != hexAddr[i] {
+	for i := 0; i < len(prefix); i++ {
+		if prefix[i] != hexAddr[i] {
+			return false
+		}
+	}
+
+	for i := 0; i < len(suffix); i++ {
+		if suffix[i] != hexAddr[len(hexAddr)-len(suffix)+i] {
 			return false
 		}
 	}
 	return true
 }
 
-func sensitiveCmp(a common.Address, b []byte) bool {
+func sensitiveCmp(a common.Address, prefix, suffix, _ []byte) bool {
 	hexAddr := a.Hex()
-	if len(b) > len(hexAddr) {
+	if len(prefix)+len(suffix) > len(hexAddr) {
 		return false
 	}
-	for i := 0; i < len(b); i++ {
-		if b[i] != hexAddr[i] {
+	for i := 0; i < len(prefix); i++ {
+		if prefix[i] != hexAddr[i] {
+			return false
+		}
+	}
+	for i := 0; i < len(suffix); i++ {
+		if suffix[i] != hexAddr[len(hexAddr)-len(suffix)+i] {
 			return false
 		}
 	}
@@ -68,24 +79,14 @@ func fastRand(n int, rbuf []byte) func() (pk *ecdsa.PrivateKey, err error) {
 	}
 }
 
-// flags
-var (
-	path        *string = flag.String("o", "priv.key", "private key file output path")
-	prefix      *string = flag.String("p", "", "prefix (excluding 0x)")
-	insensitive *bool   = flag.Bool("i", false, "accept case-insensitive solutions")
-	longOk      *bool   = flag.Bool("l", false, "accept long prefixes")
-	useFast     *bool   = flag.Bool("f", false, "use a potentially faster but less secure function to generate private keys")
-	timeOut     *int64  = flag.Int64("t", 0, "maximum acceptable search time in seconds")
-)
-
 // errors
 var (
-	errTooLongInvalid = fmt.Errorf("prefix must be 32 characters or less")
-	errTooLong        = fmt.Errorf("finding a private key for an address with this prefix is likely to take a long time; re-run with the -l flag if you wish to continue")
-	errInvalid        = fmt.Errorf("prefix must be a valid hex string containing only characters in the ranges [0-9], [a-f] and [A-F]")
+	errTooLongInvalid = fmt.Errorf("combined length of prefix and suffix must be 32 characters or less")
+	errTooLong        = fmt.Errorf("finding a private key for an address with this prefix/suffix is likely to take a long time; re-run with the -l flag if you wish to continue")
+	errInvalid        = fmt.Errorf("prefix/suffix must be a valid hex string containing only characters in the ranges [0-9], [a-f] and [A-F]")
 )
 
-func isValidPrefix(s string) error {
+func isValidSubstring(s string) error {
 	if len(s) > 32 {
 		return errTooLongInvalid
 	}
@@ -105,15 +106,30 @@ func isValidPrefix(s string) error {
 	return nil
 }
 
+type result struct {
+	privKey *ecdsa.PrivateKey
+	addr    common.Address
+}
+
 func main() {
+	// flags
+	var (
+		prefix      *string = flag.String("p", "", "output address prefix (excluding 0x)")
+		suffix      *string = flag.String("s", "", "output address suffix")
+		path        *string = flag.String("o", "priv.key", "private key file output path")
+		insensitive *bool   = flag.Bool("i", false, "accept case-insensitive solutions")
+		longOk      *bool   = flag.Bool("l", false, "accept long prefixes")
+		useFast     *bool   = flag.Bool("f", false, "use a potentially faster but less secure function to generate private keys")
+		timeOut     *int64  = flag.Int64("t", 0, "maximum acceptable search time in seconds")
+	)
 	flag.Parse()
-	if *prefix == "" {
+	if *prefix == "" && *suffix == "" {
 		flag.Usage()
 		return
 	}
 
 	var err error
-	if err = isValidPrefix(*prefix); err != nil {
+	if err = isValidSubstring(*prefix + *suffix); err != nil {
 		if !errors.Is(err, errTooLong) {
 			log.Fatalln(err)
 		}
@@ -122,14 +138,17 @@ func main() {
 		}
 	}
 	var (
-		b   []byte
-		cmp cmpFunc
+		bPref []byte // prefix bytes
+		bSuf  []byte // suffix bytes
+		cmp   cmpFunc
 	)
 	if *insensitive {
-		b = []byte(strings.ToLower(*prefix))
+		bPref = bytes.ToLower([]byte(*prefix))
+		bSuf = bytes.ToLower([]byte(*suffix))
 		cmp = insensitiveCmp
 	} else {
-		b = []byte("0x" + *prefix)
+		bPref = []byte("0x" + *prefix)
+		bSuf = []byte(*suffix)
 		cmp = sensitiveCmp
 	}
 
@@ -140,7 +159,7 @@ func main() {
 		timedOut = time.After(time.Second * time.Duration(*timeOut))
 	}
 
-	ch := make(chan *ecdsa.PrivateKey)
+	ch := make(chan result)
 	for i := 0; i < 16; i++ {
 		go func() {
 			var k keyFunc
@@ -156,26 +175,29 @@ func main() {
 				k = fastRand(n, make([]byte, n))
 			}
 			var (
-				pk   *ecdsa.PrivateKey
-				err  error
-				addr common.Address
+				res result
+				err error
+				buf []byte
 			)
-			for ok := false; !ok; ok = cmp(addr, b) {
-				pk, err = k()
+			if *insensitive {
+				// the buf parameter exists to save a little memory in the insensitiveCmp func.
+				buf = make([]byte, 0, 64)
+			}
+			for ok := false; !ok; ok = cmp(res.addr, bPref, bSuf, buf) {
+				res.privKey, err = k()
 				if err != nil {
 					log.Fatalln(err)
 				}
-				addr = crypto.PubkeyToAddress(pk.PublicKey)
+				res.addr = crypto.PubkeyToAddress(res.privKey.PublicKey)
 			}
-			ch <- pk
+			ch <- res
 		}()
 	}
 
 	select {
-	case priv := <-ch:
-		addr := crypto.PubkeyToAddress(priv.PublicKey)
-		fmt.Println(addr) // print the address first in case the path is /dev/stdout
-		if err = crypto.SaveECDSA(*path, priv); err != nil {
+	case res := <-ch:
+		fmt.Println(res.addr) // print the address first in case the path is /dev/stdout
+		if err = crypto.SaveECDSA(*path, res.privKey); err != nil {
 			log.Fatalln(err)
 		}
 	case <-timedOut:
