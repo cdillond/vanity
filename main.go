@@ -82,7 +82,7 @@ func fastRand(n int, rbuf []byte) func() (pk *ecdsa.PrivateKey, err error) {
 // errors
 var (
 	errTooLongInvalid = fmt.Errorf("combined length of prefix and suffix must be 32 characters or less")
-	errTooLong        = fmt.Errorf("finding a private key for an address with this prefix/suffix is likely to take a long time; re-run with the -l flag if you wish to continue")
+	errTooLong        = fmt.Errorf("finding a private key for an address with this prefix/suffix is likely to take a long time; re-run with the -l flag or set a timeout with the -t flag if you wish to continue")
 	errInvalid        = fmt.Errorf("prefix/suffix must be a valid hex string containing only characters in the ranges [0-9], [a-f] and [A-F]")
 )
 
