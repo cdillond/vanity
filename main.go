@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"runtime"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -160,7 +161,7 @@ func main() {
 	}
 
 	ch := make(chan result)
-	for i := 0; i < 16; i++ {
+	for i := 0; i < runtime.NumCPU(); i++ {
 		go func() {
 			var k keyFunc
 			if !*useFast {
@@ -186,7 +187,7 @@ func main() {
 			for ok := false; !ok; ok = cmp(res.addr, bPref, bSuf, buf) {
 				res.privKey, err = k()
 				if err != nil {
-					log.Fatalln(err)
+					continue
 				}
 				res.addr = crypto.PubkeyToAddress(res.privKey.PublicKey)
 			}
